@@ -48,6 +48,8 @@ In addition to the Arguments listed above - the following Attributes are exporte
 
 * `location` - The Azure Location where this Container App Environment exists.
 
+* `log_destination` - Destination for application logs. Either the empty string for no logs, `log-analytics` (see `log_analytics_workspace_name`), or `azure-monitor`.
+
 * `log_analytics_workspace_name` - The name of the Log Analytics Workspace this Container Apps Managed Environment is linked to.
 
 * `platform_reserved_cidr` - The IP range, in CIDR notation, that is reserved for environment infrastructure IP addresses.

@@ -28,6 +28,7 @@ type ContainerAppEnvironmentDataSourceModel struct {
 	ResourceGroup string `tfschema:"resource_group_name"`
 
 	Location                    string                 `tfschema:"location"`
+	LogDestination              string                 `tfschema:"log_destination"`
 	LogAnalyticsWorkspaceName   string                 `tfschema:"log_analytics_workspace_name"`
 	InfrastructureSubnetId      string                 `tfschema:"infrastructure_subnet_id"`
 	InternalLoadBalancerEnabled bool                   `tfschema:"internal_load_balancer_enabled"`
@@ -66,6 +67,12 @@ func (r ContainerAppEnvironmentDataSource) Arguments() map[string]*pluginsdk.Sch
 func (r ContainerAppEnvironmentDataSource) Attributes() map[string]*pluginsdk.Schema {
 	return map[string]*pluginsdk.Schema{
 		"location": commonschema.LocationComputed(),
+
+		"log_destination": {
+			Type:        pluginsdk.TypeString,
+			Computed:    true,
+			Description: "Destination for application logs. Can be the empty string, `log-analytics` or `azure-monitor`.",
+		},
 
 		"log_analytics_workspace_name": {
 			Type:        pluginsdk.TypeString,
@@ -156,13 +163,18 @@ func (r ContainerAppEnvironmentDataSource) Read() sdk.ResourceFunc {
 						environment.PlatformReservedDnsIP = pointer.From(vnet.PlatformReservedDnsIP)
 					}
 
-					if appsLogs := props.AppLogsConfiguration; appsLogs != nil && appsLogs.LogAnalyticsConfiguration != nil {
-						lawClient := metadata.Client.LogAnalytics.SharedKeyWorkspacesClient
-						lawName, err := findLogAnalyticsWorkspaceName(ctx, lawClient, subscriptionId, pointer.From(appsLogs.LogAnalyticsConfiguration.CustomerId))
-						if err != nil {
-							return fmt.Errorf("retrieving Log Analytics Workspace: %+v", err)
+					if appsLogs := props.AppLogsConfiguration; appsLogs != nil && appsLogs.Destination != nil {
+						environment.LogDestination = pointer.From(appsLogs.Destination)
+						if appsLogs.LogAnalyticsConfiguration != nil {
+							lawClient := metadata.Client.LogAnalytics.SharedKeyWorkspacesClient
+							lawName, err := findLogAnalyticsWorkspaceName(ctx, lawClient, subscriptionId, pointer.From(appsLogs.LogAnalyticsConfiguration.CustomerId))
+							if err != nil {
+								return fmt.Errorf("retrieving Log Analytics Workspace: %+v", err)
+							}
+							environment.LogAnalyticsWorkspaceName = lawName
 						}
-						environment.LogAnalyticsWorkspaceName = lawName
+					} else {
+						environment.LogDestination = LogDestinationNone
 					}
 
 					environment.StaticIP = pointer.From(props.StaticIP)

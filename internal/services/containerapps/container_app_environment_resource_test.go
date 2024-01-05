@@ -219,6 +219,7 @@ resource "azurerm_container_app_environment" "test" {
   name                       = "acctest-CAEnv%[2]d"
   resource_group_name        = azurerm_resource_group.test.name
   location                   = azurerm_resource_group.test.location
+  log_destination            = "log-analytics"
   log_analytics_workspace_id = azurerm_log_analytics_workspace.test.id
 
   infrastructure_subnet_id = azurerm_subnet.control.id
@@ -298,6 +299,7 @@ resource "azurerm_container_app_environment" "test" {
   name                       = "acctest-CAEnv%[2]d"
   resource_group_name        = azurerm_resource_group.test.name
   location                   = azurerm_resource_group.test.location
+  log_destination            = "log-analytics"
   log_analytics_workspace_id = azurerm_log_analytics_workspace.test.id
 
   infrastructure_subnet_id = azurerm_subnet.control.id
@@ -323,6 +325,7 @@ resource "azurerm_container_app_environment" "test" {
   name                           = "acctest-CAEnv%[2]d"
   resource_group_name            = azurerm_resource_group.test.name
   location                       = azurerm_resource_group.test.location
+  log_destination                = "log-analytics"
   log_analytics_workspace_id     = azurerm_log_analytics_workspace.test.id
   infrastructure_subnet_id       = azurerm_subnet.control.id
   zone_redundancy_enabled        = true

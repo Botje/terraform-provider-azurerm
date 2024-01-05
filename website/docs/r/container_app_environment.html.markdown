@@ -30,6 +30,7 @@ resource "azurerm_container_app_environment" "example" {
   name                       = "my-environment"
   location                   = azurerm_resource_group.example.location
   resource_group_name        = azurerm_resource_group.example.name
+  log_destination            = "log-analytics"
   log_analytics_workspace_id = azurerm_log_analytics_workspace.example.id
 }
 ```
@@ -59,6 +60,8 @@ The following arguments are supported:
 * `zone_redundancy_enabled` - (Optional) Should the Container App Environment be created with Zone Redundancy enabled? Defaults to `false`. Changing this forces a new resource to be created.
 
 ~> **Note:** can only be set to `true` if `infrastructure_subnet_id` is specified. 
+
+* `log_destination` - (Optional) Destination for application logs. Defaults to no logging, `log-analytics` (see `log_analytics_workspace_id`) or `azure-monitor`.
 
 * `log_analytics_workspace_id` - (Optional) The ID for the Log Analytics Workspace to link this Container Apps Managed Environment to. Changing this forces a new resource to be created.
 

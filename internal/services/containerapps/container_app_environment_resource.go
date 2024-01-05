@@ -23,6 +23,13 @@ import (
 	"github.com/hashicorp/terraform-provider-azurerm/internal/tf/validation"
 )
 
+const (
+	LogDestinationMissing      = ""
+	LogDestinationNone         = "none"
+	LogDestinationLogAnalytics = "log-analytics"
+	LogDestinationAzureMonitor = "azure-monitor"
+)
+
 type ContainerAppEnvironmentResource struct{}
 
 type ContainerAppEnvironmentModel struct {
@@ -30,6 +37,7 @@ type ContainerAppEnvironmentModel struct {
 	ResourceGroup                           string                         `tfschema:"resource_group_name"`
 	Location                                string                         `tfschema:"location"`
 	DaprApplicationInsightsConnectionString string                         `tfschema:"dapr_application_insights_connection_string"`
+	LogDestination                          string                         `tfschema:"log_destination"`
 	LogAnalyticsWorkspaceId                 string                         `tfschema:"log_analytics_workspace_id"`
 	InfrastructureSubnetId                  string                         `tfschema:"infrastructure_subnet_id"`
 	InternalLoadBalancerEnabled             bool                           `tfschema:"internal_load_balancer_enabled"`
@@ -45,6 +53,7 @@ type ContainerAppEnvironmentModel struct {
 }
 
 var _ sdk.ResourceWithUpdate = ContainerAppEnvironmentResource{}
+var _ sdk.ResourceWithCustomizeDiff = ContainerAppEnvironmentResource{}
 
 func (r ContainerAppEnvironmentResource) ModelObject() interface{} {
 	return &ContainerAppEnvironmentModel{}
@@ -81,10 +90,16 @@ func (r ContainerAppEnvironmentResource) Arguments() map[string]*pluginsdk.Schem
 			Description:  "Application Insights connection string used by Dapr to export Service to Service communication telemetry.",
 		},
 
+		"log_destination": {
+			Type:         pluginsdk.TypeString,
+			Optional:     true,
+			ValidateFunc: validation.StringInSlice([]string{LogDestinationNone, LogDestinationLogAnalytics, LogDestinationAzureMonitor}, false),
+			Description:  "Destination for application logs. Can be set to `none` for no logging , set to `log-analytics` (see `log_analytics_workspace_id`) or set to `azure-monitor`.",
+		},
+
 		"log_analytics_workspace_id": {
 			Type:         pluginsdk.TypeString,
 			Optional:     true,
-			ForceNew:     true,
 			ValidateFunc: workspaces.ValidateWorkspaceID,
 			Description:  "The ID for the Log Analytics Workspace to link this Container Apps Managed Environment to.",
 		},
@@ -195,40 +210,11 @@ func (r ContainerAppEnvironmentResource) Create() sdk.ResourceFunc {
 				managedEnvironment.Properties.DaprAIConnectionString = pointer.To(containerAppEnvironment.DaprApplicationInsightsConnectionString)
 			}
 
-			if containerAppEnvironment.LogAnalyticsWorkspaceId != "" {
-				logAnalyticsId, err := workspaces.ParseWorkspaceID(containerAppEnvironment.LogAnalyticsWorkspaceId)
-				if err != nil {
-					return err
-				}
-
-				workspace, err := logAnalyticsClient.Get(ctx, *logAnalyticsId)
-				if err != nil {
-					return fmt.Errorf("retrieving %s for %s: %+v", logAnalyticsId, id, err)
-				}
-
-				if workspace.Model == nil || workspace.Model.Properties == nil {
-					return fmt.Errorf("reading customer ID from %s", logAnalyticsId)
-				}
-
-				if workspace.Model.Properties.CustomerId == nil {
-					return fmt.Errorf("reading customer ID from %s, `customer_id` is nil", logAnalyticsId)
-				}
-
-				keys, err := logAnalyticsClient.SharedKeysGetSharedKeys(ctx, *logAnalyticsId)
-				if err != nil {
-					return fmt.Errorf("retrieving access keys to %s for %s: %+v", logAnalyticsId, id, err)
-				}
-				if keys.Model.PrimarySharedKey == nil {
-					return fmt.Errorf("reading shared key for %s in %s", logAnalyticsId, id)
-				}
-				managedEnvironment.Properties.AppLogsConfiguration = &managedenvironments.AppLogsConfiguration{
-					Destination: pointer.To("log-analytics"),
-					LogAnalyticsConfiguration: &managedenvironments.LogAnalyticsConfiguration{
-						CustomerId: workspace.Model.Properties.CustomerId,
-						SharedKey:  keys.Model.PrimarySharedKey,
-					},
-				}
+			appLogsConfiguration, err := constructAppLogsConfigurationFromModel(ctx, &id, containerAppEnvironment, logAnalyticsClient)
+			if err != nil {
+				return err
 			}
+			managedEnvironment.Properties.AppLogsConfiguration = appLogsConfiguration
 
 			if containerAppEnvironment.InfrastructureSubnetId != "" {
 				managedEnvironment.Properties.VnetConfiguration.InfrastructureSubnetId = pointer.To(containerAppEnvironment.InfrastructureSubnetId)
@@ -286,17 +272,25 @@ func (r ContainerAppEnvironmentResource) Read() sdk.ResourceFunc {
 					state.StaticIP = pointer.From(props.StaticIP)
 					state.DefaultDomain = pointer.From(props.DefaultDomain)
 					state.WorkloadProfiles = helpers.FlattenWorkloadProfiles(props.WorkloadProfiles)
+					if appsLogs := props.AppLogsConfiguration; appsLogs != nil && appsLogs.Destination != nil {
+						state.LogDestination = pointer.From(appsLogs.Destination)
+
+						if state.LogDestination == LogDestinationLogAnalytics {
+							// Reading in log_analytics_workspace_id is not possible, so reading from config. Import will need to ignore_changes unfortunately
+							if v := metadata.ResourceData.Get("log_analytics_workspace_id").(string); v != "" {
+								state.LogAnalyticsWorkspaceId = v
+							}
+						}
+
+					} else {
+						state.LogDestination = LogDestinationNone
+					}
 				}
 			}
 
 			// `dapr_application_insights_connection_string` is sensitive and not returned by API
 			if v := metadata.ResourceData.Get("dapr_application_insights_connection_string").(string); v != "" {
 				state.DaprApplicationInsightsConnectionString = v
-			}
-
-			// Reading in log_analytics_workspace_id is not possible, so reading from config. Import will need to ignore_changes unfortunately
-			if v := metadata.ResourceData.Get("log_analytics_workspace_id").(string); v != "" {
-				state.LogAnalyticsWorkspaceId = v
 			}
 
 			if err := metadata.Encode(&state); err != nil {
@@ -332,6 +326,7 @@ func (r ContainerAppEnvironmentResource) Update() sdk.ResourceFunc {
 		Timeout: 30 * time.Minute,
 		Func: func(ctx context.Context, metadata sdk.ResourceMetaData) error {
 			client := metadata.Client.ContainerApps.ManagedEnvironmentClient
+			logAnalyticsClient := metadata.Client.LogAnalytics.SharedKeyWorkspacesClient
 			id, err := managedenvironments.ParseManagedEnvironmentID(metadata.ResourceData.Id())
 			if err != nil {
 				return err
@@ -351,9 +346,36 @@ func (r ContainerAppEnvironmentResource) Update() sdk.ResourceFunc {
 				existing.Model.Tags = tags.Expand(state.Tags)
 			}
 
-			// (@jackofallops) This is not updatable and needs to be removed since the read does not return the sensitive Key field.
-			// Whilst not ideal, this means we don't need to try and retrieve it again just to send a no-op.
-			existing.Model.Properties.AppLogsConfiguration = nil
+			if state.LogDestination == LogDestinationMissing {
+				if state.LogAnalyticsWorkspaceId != "" {
+					state.LogDestination = LogDestinationLogAnalytics
+				} else {
+					state.LogDestination = LogDestinationNone
+				}
+			}
+
+			appLogDestination := LogDestinationNone
+			if appLogs := existing.Model.Properties.AppLogsConfiguration; appLogs != nil && appLogs.Destination != nil {
+				appLogDestination = *appLogs.Destination
+			}
+
+			if state.LogDestination == appLogDestination {
+				if state.LogDestination == LogDestinationLogAnalytics {
+					// (@jackofallops) This is not updatable and needs to be removed since the read does not return the sensitive Key field.
+					// Whilst not ideal, this means we don't need to try and retrieve it again just to send a no-op.
+					existing.Model.Properties.AppLogsConfiguration = nil
+				} else {
+					existing.Model.Properties.AppLogsConfiguration = nil
+				}
+			} else if state.LogDestination == LogDestinationNone {
+				existing.Model.Properties.AppLogsConfiguration = pointer.To(managedenvironments.AppLogsConfiguration{Destination: nil})
+			} else {
+				appLogsFromState, err := constructAppLogsConfigurationFromModel(ctx, id, state, logAnalyticsClient)
+				if err != nil {
+					return err
+				}
+				existing.Model.Properties.AppLogsConfiguration = appLogsFromState
+			}
 
 			if err := client.CreateOrUpdateThenPoll(ctx, *id, *existing.Model); err != nil {
 				return fmt.Errorf("updating %s: %+v", id, err)
@@ -361,5 +383,74 @@ func (r ContainerAppEnvironmentResource) Update() sdk.ResourceFunc {
 
 			return nil
 		},
+	}
+}
+
+func (r ContainerAppEnvironmentResource) CustomizeDiff() sdk.ResourceFunc {
+	return sdk.ResourceFunc{
+		Timeout: 30 * time.Minute,
+		Func: func(ctx context.Context, metadata sdk.ResourceMetaData) error {
+			var model ContainerAppEnvironmentModel
+			if err := metadata.DecodeDiff(&model); err != nil {
+				return fmt.Errorf("DecodeDiff: %+v", err)
+			}
+
+			log_destination, exists := metadata.ResourceDiff.GetOk("log_destination")
+
+			if exists && model.LogAnalyticsWorkspaceId != "" && log_destination != LogDestinationLogAnalytics {
+				return fmt.Errorf("log_analytics_workspace_id is set for %s but log_destination is set to '%s' instead of 'log-analytics'", model.Name, model.LogDestination)
+			}
+
+			return nil
+		},
+	}
+}
+
+func constructAppLogsConfigurationFromModel(ctx context.Context, id *managedenvironments.ManagedEnvironmentId, model ContainerAppEnvironmentModel, logAnalyticsClient *workspaces.WorkspacesClient) (*managedenvironments.AppLogsConfiguration, error) {
+	switch model.LogDestination {
+	case LogDestinationNone:
+		return nil, nil
+	case LogDestinationAzureMonitor:
+		return pointer.To(managedenvironments.AppLogsConfiguration{
+			Destination: pointer.To(LogDestinationAzureMonitor),
+		}), nil
+	case LogDestinationLogAnalytics:
+		{
+			logAnalyticsId, err := workspaces.ParseWorkspaceID(model.LogAnalyticsWorkspaceId)
+			if err != nil {
+				return nil, err
+			}
+
+			workspace, err := logAnalyticsClient.Get(ctx, *logAnalyticsId)
+			if err != nil {
+				return nil, fmt.Errorf("retrieving %s for %s: %+v", logAnalyticsId, id, err)
+			}
+
+			if workspace.Model == nil || workspace.Model.Properties == nil {
+				return nil, fmt.Errorf("reading customer ID from %s", logAnalyticsId)
+			}
+
+			if workspace.Model.Properties.CustomerId == nil {
+				return nil, fmt.Errorf("reading customer ID from %s, `customer_id` is nil", logAnalyticsId)
+			}
+
+			keys, err := logAnalyticsClient.SharedKeysGetSharedKeys(ctx, *logAnalyticsId)
+			if err != nil {
+				return nil, fmt.Errorf("retrieving access keys to %s for %s: %+v", logAnalyticsId, id, err)
+			}
+			if keys.Model.PrimarySharedKey == nil {
+				return nil, fmt.Errorf("reading shared key for %s in %s", logAnalyticsId, id)
+			}
+
+			return pointer.To(managedenvironments.AppLogsConfiguration{
+				Destination: pointer.To(LogDestinationLogAnalytics),
+				LogAnalyticsConfiguration: &managedenvironments.LogAnalyticsConfiguration{
+					CustomerId: workspace.Model.Properties.CustomerId,
+					SharedKey:  keys.Model.PrimarySharedKey,
+				},
+			}), nil
+		}
+	default:
+		return nil, fmt.Errorf("invalid log destination %s", model.LogDestination)
 	}
 }
