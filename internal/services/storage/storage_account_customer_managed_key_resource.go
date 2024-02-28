@@ -218,6 +218,7 @@ func resourceStorageAccountCustomerManagedKeyCreateUpdate(d *pluginsdk.ResourceD
 func resourceStorageAccountCustomerManagedKeyRead(d *pluginsdk.ResourceData, meta interface{}) error {
 	storageClient := meta.(*clients.Client).Storage.AccountsClient
 	keyVaultsClient := meta.(*clients.Client).KeyVault
+	env := meta.(*clients.Client).Account.Environment
 	ctx, cancel := timeouts.ForRead(meta.(*clients.Client).StopContext, d)
 	defer cancel()
 
@@ -281,8 +282,12 @@ func resourceStorageAccountCustomerManagedKeyRead(d *pluginsdk.ResourceData, met
 
 	// we can't look up the ID when using federated identity as the key will be under different tenant
 	if federatedIdentityClientID == "" {
-		isHSMURI := managedHsmParse.IsManagedHSMURI(keyVaultURI)
+		isHSMURI, err := managedHsmParse.IsManagedHSMURI(keyVaultURI, &env)
 		switch {
+		case err != nil:
+			{
+				return fmt.Errorf("parsing Base Key Vault URI %q: %+v", keyVaultURI, err)
+			}
 		case isHSMURI:
 			{
 				d.Set("managed_hsm_uri", keyVaultURI)
