@@ -29,6 +29,10 @@ type RoleNestedItemId struct {
 	Name         string
 }
 
+func IsManagedHSMURI(uri string) bool {
+	return strings.Contains(uri, ".managedhsm.")
+}
+
 func NewRoleNestedItemID(hsmBaseUrl, scope string, typ MHSMResourceType, name string) (*RoleNestedItemId, error) {
 	keyVaultUrl, err := url.Parse(hsmBaseUrl)
 	if err != nil || hsmBaseUrl == "" {
