@@ -2039,6 +2039,7 @@ func resourceStorageAccountUpdate(d *pluginsdk.ResourceData, meta interface{}) e
 
 func resourceStorageAccountRead(d *pluginsdk.ResourceData, meta interface{}) error {
 	client := meta.(*clients.Client).Storage.AccountsClient
+	env := meta.(*clients.Client).Account.Environment
 	ctx, cancel := timeouts.ForRead(meta.(*clients.Client).StopContext, d)
 	defer cancel()
 
@@ -2244,7 +2245,7 @@ func resourceStorageAccountRead(d *pluginsdk.ResourceData, meta interface{}) err
 		d.Set("table_encryption_key_type", tableEncryptionKeyType)
 		d.Set("queue_encryption_key_type", queueEncryptionKeyType)
 
-		customerManagedKey, err := flattenStorageAccountCustomerManagedKey(id, props.Encryption)
+		customerManagedKey, err := flattenStorageAccountCustomerManagedKey(id, props.Encryption, &env)
 		if err != nil {
 			return err
 		}
@@ -2576,7 +2577,7 @@ func flattenStorageAccountImmutabilityPolicy(policy *storage.ImmutableStorageAcc
 	}
 }
 
-func flattenStorageAccountCustomerManagedKey(storageAccountId *commonids.StorageAccountId, input *storage.Encryption) ([]interface{}, error) {
+func flattenStorageAccountCustomerManagedKey(storageAccountId *commonids.StorageAccountId, input *storage.Encryption, env *environments.Environment) ([]interface{}, error) {
 	if input == nil || input.KeySource == storage.KeySourceMicrosoftStorage {
 		return make([]interface{}, 0), nil
 	}
@@ -2612,8 +2613,12 @@ func flattenStorageAccountCustomerManagedKey(storageAccountId *commonids.Storage
 		"user_assigned_identity_id": userAssignedIdentityId,
 	}
 
-	isHSMURI := managedHsmParse.IsManagedHSMURI(keyVaultURI)
+	isHSMURI, err := managedHsmParse.IsManagedHSMURI(keyVaultURI, env)
 	switch {
+	case err != nil:
+		{
+			return nil, fmt.Errorf("parsing Base Key Vault URI %q: %+v", keyVaultURI, err)
+		}
 	case isHSMURI:
 		{
 			keyId, err := managedHsmParse.NewManagedHSMKeyID(keyVaultURI, keyName, keyVersion)

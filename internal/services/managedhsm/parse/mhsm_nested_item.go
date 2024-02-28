@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/hashicorp/go-azure-helpers/resourcemanager/resourceids"
+	"github.com/hashicorp/go-azure-sdk/sdk/environments"
+	"github.com/hashicorp/terraform-provider-azurerm/utils"
 )
 
 var _ resourceids.Id = RoleNestedItemId{}
@@ -29,8 +31,18 @@ type RoleNestedItemId struct {
 	Name         string
 }
 
-func IsManagedHSMURI(uri string) bool {
-	return strings.Contains(uri, ".managedhsm.")
+func IsManagedHSMURI(uri string, env *environments.Environment) (bool, error) {
+	domainSuffix, found := env.ManagedHSM.DomainSuffix()
+	if !found {
+		domainSuffix = utils.String(".managedhsm.azure.net")
+	}
+
+	url, err := url.Parse(uri)
+	if err != nil {
+		return false, err
+	}
+
+	return strings.HasSuffix(url.Host, *domainSuffix), nil
 }
 
 func NewRoleNestedItemID(hsmBaseUrl, scope string, typ MHSMResourceType, name string) (*RoleNestedItemId, error) {
