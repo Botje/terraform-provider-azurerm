@@ -16,6 +16,7 @@ import (
 	"github.com/hashicorp/terraform-provider-azurerm/internal/clients"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/locks"
 	managedHsmParse "github.com/hashicorp/terraform-provider-azurerm/internal/services/managedhsm/parse"
+	managedHsmValidate "github.com/hashicorp/terraform-provider-azurerm/internal/services/managedhsm/validate"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/tf/pluginsdk"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/tf/validation"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/timeouts"
@@ -57,14 +58,24 @@ func resourceStorageAccountCustomerManagedKey() *pluginsdk.Resource {
 					commonids.ValidateKeyVaultID,
 					managedhsms.ValidateManagedHSMID,
 				),
-				ExactlyOneOf: []string{"managed_hsm_uri", "key_vault_id", "key_vault_uri"},
+				ExactlyOneOf: []string{"managed_hsm_key_id", "managed_hsm_uri", "key_vault_id", "key_vault_uri"},
 			},
 
 			"key_vault_uri": {
 				Type:         pluginsdk.TypeString,
 				Optional:     true,
 				ValidateFunc: validation.IsURLWithHTTPS,
-				ExactlyOneOf: []string{"managed_hsm_uri", "key_vault_id", "key_vault_uri"},
+				ExactlyOneOf: []string{"managed_hsm_key_id", "managed_hsm_uri", "key_vault_id", "key_vault_uri"},
+				RequiredWith: []string{"key_name"},
+				Computed:     true,
+			},
+			
+			"managed_hsm_key_id": {
+				Type:         pluginsdk.TypeString,
+				Optional:     true,
+				ValidateFunc: managedHsmValidate.OptionallyVersionedNestedItemID,
+				ExactlyOneOf: []string{"managed_hsm_key_id", "managed_hsm_uri", "key_vault_id", "key_vault_uri"},
+				ConflictsWith: []string{"key_name", "key_version"},
 				Computed:     true,
 			},
 
@@ -72,12 +83,14 @@ func resourceStorageAccountCustomerManagedKey() *pluginsdk.Resource {
 				Type:         pluginsdk.TypeString,
 				Optional:     true,
 				ValidateFunc: validation.IsURLWithHTTPS,
-				ExactlyOneOf: []string{"managed_hsm_uri", "key_vault_id", "key_vault_uri"},
+				ExactlyOneOf: []string{"managed_hsm_key_id", "managed_hsm_uri", "key_vault_id", "key_vault_uri"},
+				RequiredWith: []string{"key_name"},
+				Computed:     true,
 			},
 
 			"key_name": {
 				Type:         pluginsdk.TypeString,
-				Required:     true,
+				Optional:     true,
 				ValidateFunc: validation.StringIsNotEmpty,
 			},
 
@@ -136,7 +149,9 @@ func resourceStorageAccountCustomerManagedKeyCreateUpdate(d *pluginsdk.ResourceD
 		}
 	}
 
-	keyVaultURI := ""
+	keyVaultURI:= ""
+	keyName := d.Get("key_name").(string)
+	keyVersion := d.Get("key_version").(string)
 	if keyVaultURIRaw := d.Get("key_vault_uri").(string); keyVaultURIRaw != "" {
 		keyVaultURI = keyVaultURIRaw
 	} else if _, ok := d.GetOk("key_vault_id"); ok {
@@ -172,10 +187,16 @@ func resourceStorageAccountCustomerManagedKeyCreateUpdate(d *pluginsdk.ResourceD
 		keyVaultURI = *keyVaultBaseURL
 	} else if _, ok := d.GetOk("managed_hsm_uri"); ok {
 		keyVaultURI = d.Get("managed_hsm_uri").(string)
+	} else if kid, ok := d.GetOk("managed_hsm_key_id"); ok {
+		managedHSMKeyID, err := managedHsmParse.ParseOptionallyVersionedNestedItemID(kid.(string))
+		if err != nil {
+			return fmt.Errorf("parsing managed HSM Key from %q: %+v", kid, err)
+		}
+		keyVaultURI = managedHSMKeyID.HSMBaseUrl
+		keyName = managedHSMKeyID.Name
+		keyVersion = managedHSMKeyID.Version
 	}
 
-	keyName := d.Get("key_name").(string)
-	keyVersion := d.Get("key_version").(string)
 	userAssignedIdentity := d.Get("user_assigned_identity_id").(string)
 	federatedIdentityClientID := d.Get("federated_identity_client_id").(string)
 
@@ -291,6 +312,11 @@ func resourceStorageAccountCustomerManagedKeyRead(d *pluginsdk.ResourceData, met
 		case isHSMURI:
 			{
 				d.Set("managed_hsm_uri", keyVaultURI)
+				keyId, err := managedHsmParse.NewManagedHSMKeyID(keyVaultURI, keyName, keyVersion)
+				if err != nil {
+					return fmt.Errorf("reconstructing Managed HSM Key ID from %q: %+v", keyVaultURI, err)
+				}
+				d.Set("managed_hsm_key_id", keyId.ID())
 			}
 		case !isHSMURI:
 			{
