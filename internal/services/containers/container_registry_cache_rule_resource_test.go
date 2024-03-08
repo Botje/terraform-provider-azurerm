@@ -9,76 +9,11 @@ import (
 	"github.com/hashicorp/terraform-provider-azurerm/internal/acceptance"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/acceptance/check"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/clients"
-	"github.com/hashicorp/terraform-provider-azurerm/internal/services/containers/validate"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/tf/pluginsdk"
 	"github.com/hashicorp/terraform-provider-azurerm/utils"
 )
 
 type ContainerRegistryCacheRuleResource struct{}
-
-func TestAccContainerRegistryCacheRuleName_validation(t *testing.T) {
-	cases := []struct {
-		Value    string
-		ErrCount int
-	}{
-		{
-			Value:    "",
-			ErrCount: 2,
-		},
-		{
-			Value:    "four",
-			ErrCount: 1,
-		},
-		{
-			Value:    "5five",
-			ErrCount: 0,
-		},
-		{
-			Value:    "hello-world",
-			ErrCount: 0,
-		},
-		{
-			Value:    "hello-world-foo-bar-12345",
-			ErrCount: 0,
-		},
-		{
-			Value:    "hello_world",
-			ErrCount: 1,
-		},
-		{
-			Value:    "helloWorld",
-			ErrCount: 0,
-		},
-		{
-			Value:    "helloworld12",
-			ErrCount: 0,
-		},
-		{
-			Value:    "hello@world",
-			ErrCount: 1,
-		},
-		{
-			Value:    "qfvbdsbvipqdbwsbddbdcwqffewsqwcdw21ddwqwd3324120",
-			ErrCount: 0,
-		},
-		{
-			Value:    "qfvbdsbvipqdbwsbddbdcwqffewsqwcdw21ddwqwd33241202",
-			ErrCount: 0,
-		},
-		{
-			Value:    "qfvbdsbvipqdbwsbddbdcwqfjjfewsqwcdw21ddwqwd3324120",
-			ErrCount: 1,
-		},
-	}
-
-	for _, tc := range cases {
-		_, errors := validate.ContainerRegistryCacheRuleName(tc.Value, "azurerm_container_registry_cache_rule")
-
-		if len(errors) != tc.ErrCount {
-			t.Fatalf("Expected the Azure RM Container Registry Cache Rule Name to trigger a validation error: %v", errors)
-		}
-	}
-}
 
 func TestAccContainerRegistryCacheRule_basic(t *testing.T) {
 	data := acceptance.BuildTestData(t, "azurerm_container_registry_cache_rule", "test")
@@ -134,25 +69,24 @@ provider "azurerm" {
 }
 
 resource "azurerm_resource_group" "test" {
-	name     = "accTestRG-acr-cache-rule-%d"
-	location = "%s"
+	name     = "accTestRG-acr-cache-rule-%[1]d"
+	location = "%[2]s"
 }
 
 resource "azurerm_container_registry" "test" {
-  name                = "testacccr%d"
+  name                = "testacccr%[1]d"
   location            = azurerm_resource_group.test.location
   resource_group_name = azurerm_resource_group.test.name
   sku                 = "Basic"
 }
 
 resource "azurerm_container_registry_cache_rule" "test" {
-  name                = "testacc-cr-cache-rule-%d"
-  resource_group_name = azurerm_resource_group.test.name
-  registry            = azurerm_container_registry.test.name
+  name                = "testacc-cr-cache-rule-%[1]d"
+  container_registry_id = azurerm_container_registry.test.id
   target_repo         = "target"
   source_repo         = "docker.io/hello-world"
 }
-`, data.RandomInteger, data.Locations.Primary, data.RandomInteger, data.RandomInteger)
+`, data.RandomInteger, data.Locations.Primary)
 }
 
 func (r ContainerRegistryCacheRuleResource) requiresImport(data acceptance.TestData) string {
@@ -161,7 +95,9 @@ func (r ContainerRegistryCacheRuleResource) requiresImport(data acceptance.TestD
 
 resource "azurerm_container_registry_cache_rule" "import" {
   name                = azurerm_container_registry_cache_rule.test.name
-  resource_group_name = azurerm_container_registry_cache_rule.test.resource_group_name
+  resource_group_name = azurerm_container_registry_cache_rule.test.container_registry_id
+  target_repo         = azurerm_container_registry_cache_rule.test.target_repo
+  source_repo         = azurerm_container_registry_cache_rule.test.source_repo
 }
 `, r.basic(data))
 }

@@ -11,15 +11,15 @@ import (
 
 	"github.com/hashicorp/go-azure-helpers/lang/response"
 	"github.com/hashicorp/go-azure-sdk/resource-manager/containerregistry/2023-07-01/cacherules"
-	"github.com/hashicorp/terraform-provider-azurerm/helpers/tf"
+	"github.com/hashicorp/go-azure-sdk/resource-manager/containerregistry/2023-07-01/registries"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/sdk"
-	"github.com/hashicorp/terraform-provider-azurerm/internal/services/containers/validate"
-	containerValidate "github.com/hashicorp/terraform-provider-azurerm/internal/services/containers/validate"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/tf/pluginsdk"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/timeouts"
 )
 
 var _ sdk.Resource = ContainerRegistryCacheRule{}
+var _ sdk.ResourceWithUpdate = ContainerRegistryCacheRule{}
 
 type ContainerRegistryCacheRule struct{}
 
@@ -28,25 +28,36 @@ func (ContainerRegistryCacheRule) Arguments() map[string]*pluginsdk.Schema {
 		"name": {
 			Type:        pluginsdk.TypeString,
 			Required:    true,
+			ForceNew:    true,
 			Description: "The name of the cache rule.",
+			ValidateFunc: validation.StringLenBetween(5, 40),
 		},
 
-		"registry": {
+		"credential_set_id": {
+			Type:        pluginsdk.TypeString,
+			Optional:    true,
+			Description: "Credential set ID",
+		},
+
+		"container_registry_id": {
 			Type:         pluginsdk.TypeString,
 			Required:     true,
-			Description:  "The name of the container registry.",
-			ValidateFunc: containerValidate.ContainerRegistryName,
+			ForceNew:     true,
+			Description:  "Resource ID of the parent container registry.",
+			ValidateFunc: registries.ValidateRegistryID,
 		},
 
 		"source_repo": {
 			Type:        pluginsdk.TypeString,
 			Required:    true,
+			ForceNew:    true,
 			Description: "The full source repository path such as 'docker.io/library/ubuntu'.",
 		},
 
 		"target_repo": {
 			Type:        pluginsdk.TypeString,
 			Required:    true,
+			ForceNew:    true,
 			Description: "The target repository namespace such as 'ubuntu'.",
 		},
 	}
@@ -69,53 +80,62 @@ func (r ContainerRegistryCacheRule) Create() sdk.ResourceFunc {
 		Timeout: 30 * time.Minute,
 		Func: func(ctx context.Context, metadata sdk.ResourceMetaData) error {
 			cacheRulesClient := metadata.Client.Containers.ContainerRegistryClient_v2023_07_01.CacheRules
+			registryClient := metadata.Client.Containers.ContainerRegistryClient_v2023_07_01.Registries
 			subscriptionId := metadata.Client.Account.SubscriptionId
 			ctx, cancel := timeouts.ForCreate(metadata.Client.StopContext, metadata.ResourceData)
 
 			defer cancel()
 			log.Printf("[INFO] preparing arguments for Container Registry Cache Rule creation.")
 
+			registryId, err := registries.ParseRegistryID(metadata.ResourceData.Get("container_registry_id").(string))
+			if err != nil {
+				return err
+			}
+
+			_, err = registryClient.Get(ctx, *registryId)
+			if err != nil {
+				return fmt.Errorf("getting registry %s: %+v", registryId, err)
+			}
+
 			id := cacherules.NewCacheRuleID(subscriptionId,
-				metadata.ResourceData.Get("resource_group_name").(string),
-				metadata.ResourceData.Get("registry").(string),
+				registryId.ResourceGroupName,
+				registryId.RegistryName,
 				metadata.ResourceData.Get("name").(string),
 			)
 
-			if metadata.ResourceData.IsNewResource() {
-				existing, err := cacheRulesClient.Get(ctx, id)
+			existing, err := cacheRulesClient.Get(ctx, id)
 
-				if err != nil {
-					if !response.WasNotFound(existing.HttpResponse) {
-						return fmt.Errorf("checking for presence of existing %s: %s", id, err)
-					}
-				}
-
+			if err != nil {
 				if !response.WasNotFound(existing.HttpResponse) {
-					return tf.ImportAsExistsError("azurerm_container_registry_cache_rule", id.ID())
+					return fmt.Errorf("checking for presence of existing %s: %s", id, err)
 				}
+			}
 
-				// TODO: make a check that the repo is available in the registry.
-				targetRepo := metadata.ResourceData.Get("target_repo").(string)
+			if !response.WasNotFound(existing.HttpResponse) {
+				return metadata.ResourceRequiresImport(r.ResourceType(), id)
+			}
 
-				// TODO: validate the source repo.
-				sourceRepo := metadata.ResourceData.Get("source_repo").(string)
+			// TODO: make a check that the repo is available in the registry.
+			targetRepo := metadata.ResourceData.Get("target_repo").(string)
 
-				parameters := cacherules.CacheRule{
-					Name: &id.CacheRuleName,
-					Properties: &cacherules.CacheRuleProperties{
-						SourceRepository: &sourceRepo,
-						TargetRepository: &targetRepo,
-					},
-				}
+			// TODO: validate the source repo.
+			sourceRepo := metadata.ResourceData.Get("source_repo").(string)
 
-				if err := cacheRulesClient.CreateThenPoll(ctx, id, parameters); err != nil {
-					return fmt.Errorf("creating Container Registry Cache Rule %s: %+v", id, err)
-				}
+			parameters := cacherules.CacheRule{
+				Name: &id.CacheRuleName,
+				Properties: &cacherules.CacheRuleProperties{
+					SourceRepository: &sourceRepo,
+					TargetRepository: &targetRepo,
+				},
+			}
+
+			if err := cacheRulesClient.CreateThenPoll(ctx, id, parameters); err != nil {
+				return fmt.Errorf("creating Container Registry Cache Rule %s: %+v", id, err)
 			}
 
 			metadata.SetID(id)
 
-			return r.Read().Func(ctx, metadata)
+			return nil
 		},
 	}
 }
@@ -144,7 +164,8 @@ func (ContainerRegistryCacheRule) Read() sdk.ResourceFunc {
 			}
 
 			metadata.ResourceData.Set("name", id.CacheRuleName)
-			metadata.ResourceData.Set("registry", id.RegistryName)
+			registryId := registries.NewRegistryID(id.SubscriptionId, id.SubscriptionId, id.RegistryName)
+			metadata.ResourceData.Set("container_registry_id", registryId)
 
 			if model := resp.Model; model != nil {
 				if properties := model.Properties; properties != nil {
@@ -212,5 +233,5 @@ func (ContainerRegistryCacheRule) Delete() sdk.ResourceFunc {
 }
 
 func (ContainerRegistryCacheRule) IDValidationFunc() pluginsdk.SchemaValidateFunc {
-	return validate.ContainerRegistryCacheRuleID
+	return cacherules.ValidateCacheRuleID
 }
